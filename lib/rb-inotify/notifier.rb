@@ -22,6 +22,51 @@ module INotify
   #   # Nothing happens until you run the notifier!
   #   notifier.run
   class Notifier
+    # Wrapper around the underlying file handle, to keep track of whether it's
+    # been closed, and ensure it's not leaked if the Notifier goes out of scope
+    # without an explicit #close.
+    #
+    # @private
+    class Handle
+      def initialize(fd)
+        @fd = fd
+      end
+
+      attr_reader :fd
+
+      def io
+        @io ||= IO.new(@fd, autoclose: false)
+      end
+
+      def finalizer
+        proc { close }
+      end
+
+      def close
+        return if @fd.nil?
+
+        # If we've given out an IO object, we close the fd through it, so the IO
+        # will itself be closed, and disallow further activity.
+        if @io
+          @io.close
+          @io = @fd = nil
+          return
+        end
+
+        if Native.close(@fd) == 0
+          @fd = nil
+          return
+        end
+
+        raise SystemCallError.new("Failed to properly close inotify socket" +
+         case FFI.errno
+         when Errno::EBADF::Errno; ": invalid or closed file descriptior"
+         when Errno::EIO::Errno; ": an I/O error occured"
+         end,
+         FFI.errno)
+      end
+    end
+
     # A list of directories that should never be recursively watched.
     #
     # * Files in `/dev/fd` sometimes register as directories, but are not enumerable.
@@ -38,7 +83,9 @@ module INotify
     # (except under JRuby -- see \{#to\_io}).
     #
     # @return [Fixnum]
-    attr_reader :fd
+    def fd
+      @handle.fd
+    end
 
     # @return [Boolean] Whether or not this Ruby implementation supports
     #   wrapping the native file descriptor in a Ruby IO wrapper.
@@ -51,9 +98,13 @@ module INotify
     # @return [Notifier]
     # @raise [SystemCallError] if inotify failed to initialize for some reason
     def initialize
-      @fd = Native.inotify_init
+      fd = Native.inotify_init
       @watchers = {}
-      return unless @fd < 0
+      unless fd < 0
+        @handle = Handle.new(fd)
+        ObjectSpace.define_finalizer(self, @handle.finalizer)
+        return
+      end
 
       raise SystemCallError.new(
         "Failed to initialize inotify" +
@@ -85,7 +136,7 @@ module INotify
       unless self.class.supports_ruby_io?
         raise NotImplementedError.new("INotify::Notifier#to_io is not supported under JRuby")
       end
-      @io ||= IO.new(@fd)
+      @handle.io
     end
 
     # Watches a file or directory for changes,
@@ -242,17 +293,8 @@ module INotify
     #
     # @raise [SystemCallError] if closing the underlying file descriptor fails.
     def close
-      if Native.close(@fd) == 0
-        @watchers.clear
-        return
-      end
-
-      raise SystemCallError.new("Failed to properly close inotify socket" +
-       case FFI.errno
-       when Errno::EBADF::Errno; ": invalid or closed file descriptior"
-       when Errno::EIO::Errno; ": an I/O error occured"
-       end,
-       FFI.errno)
+      @handle.close
+      @watchers.clear
     end
 
     # Blocks until there are one or more filesystem events
