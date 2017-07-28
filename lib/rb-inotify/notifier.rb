@@ -1,3 +1,5 @@
+require 'monitor'
+
 module INotify
   # Notifier wraps a single instance of inotify.
   # It's possible to have more than one instance,
@@ -48,12 +50,16 @@ module INotify
       RUBY_PLATFORM !~ /java/
     end
 
+    include MonitorMixin
+
     # Creates a new {Notifier}.
     #
     # @return [Notifier]
     # @raise [SystemCallError] if inotify failed to initialize for some reason
     def initialize
+      super
       fd = Native.inotify_init
+      @pipe = IO.pipe
       @watchers = {}
       unless fd < 0
         if self.class.supports_ruby_io?
@@ -231,8 +237,11 @@ module INotify
     #
     # @see #process
     def run
-      @stop = false
-      process until @stop
+      synchronize do
+        @stop = false
+
+        process until @stop
+      end
     end
 
     # Stop watching for filesystem events.
@@ -240,6 +249,10 @@ module INotify
     # exit out as soon as we finish handling the events.
     def stop
       @stop = true
+      @pipe.last.write "."
+
+      synchronize do
+      end
     end
 
     # Blocks until there are one or more filesystem events
@@ -303,6 +316,8 @@ module INotify
 
     # Same as IO#readpartial, or as close as we need.
     def readpartial(size)
+      x, = select([@handle, @pipe.first])
+      return nil if x.include?(@pipe.first)
       @handle.readpartial(size)
     rescue Errno::EBADF
       # If the IO has already been closed, reading from it will cause
