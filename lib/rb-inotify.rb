@@ -1,7 +1,6 @@
 require 'rb-inotify/version'
 require 'rb-inotify/native'
 require 'rb-inotify/native/flags'
-require 'rb-inotify/native/handle'
 require 'rb-inotify/notifier'
 require 'rb-inotify/watcher'
 require 'rb-inotify/event'

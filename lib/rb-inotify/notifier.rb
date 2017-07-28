@@ -44,12 +44,6 @@ module INotify
       @handle.fileno
     end
 
-    # @return [Boolean] Whether or not this Ruby implementation supports
-    #   wrapping the native file descriptor in a Ruby IO wrapper.
-    def self.supports_ruby_io?
-      RUBY_PLATFORM !~ /java/
-    end
-
     include MonitorMixin
 
     # Creates a new {Notifier}.
@@ -58,16 +52,12 @@ module INotify
     # @raise [SystemCallError] if inotify failed to initialize for some reason
     def initialize
       super
+
       fd = Native.inotify_init
       @pipe = IO.pipe
       @watchers = {}
       unless fd < 0
-        if self.class.supports_ruby_io?
-          @handle = IO.new(fd)
-        else
-          @handle = Native::Handle.new(fd)
-          ObjectSpace.define_finalizer(self, @handle.finalizer)
-        end
+        @handle = IO.new(fd)
         return
       end
 
@@ -98,9 +88,6 @@ module INotify
     # @return [IO] An IO object wrapping the file descriptor
     # @raise [NotImplementedError] if this is being called in JRuby
     def to_io
-      unless self.class.supports_ruby_io?
-        raise NotImplementedError.new("INotify::Notifier#to_io is not supported under JRuby")
-      end
       @handle
     end
 
